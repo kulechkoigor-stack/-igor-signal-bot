@@ -1,1 +1,5 @@
-
+python-telegram-bot==21.6
+ccxt
+pandas
+ta
+python-dotenv
