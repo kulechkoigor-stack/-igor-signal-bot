@@ -3,22 +3,33 @@ import pandas as pd
 
 session = HTTP(testnet=False)
 
+
 def get_usdt_symbols():
-    response = session.get_instruments_info(
-        category="linear"
-    )
-
-    symbols = []
-
-    for item in response["result"]["list"]:
-        if item["quoteCoin"] == "USDT":
-            symbols.append(item["symbol"])
-
-    return symbols
+    return [
+        "BTCUSDT",
+        "ETHUSDT",
+        "BNBUSDT",
+        "SOLUSDT",
+        "XRPUSDT",
+        "DOGEUSDT",
+        "ADAUSDT",
+        "TRXUSDT",
+        "LINKUSDT",
+        "AVAXUSDT",
+        "SUIUSDT",
+        "TONUSDT",
+        "DOTUSDT",
+        "LTCUSDT",
+        "BCHUSDT",
+        "AAVEUSDT",
+        "NEARUSDT",
+        "APTUSDT",
+        "ARBUSDT",
+        "OPUSDT"
+    ]
 
 
 def get_klines(symbol, interval="15", limit=200):
-
     response = session.get_kline(
         category="linear",
         symbol=symbol,
@@ -27,7 +38,6 @@ def get_klines(symbol, interval="15", limit=200):
     )
 
     rows = response["result"]["list"]
-
     rows.reverse()
 
     df = pd.DataFrame(rows)
@@ -42,13 +52,7 @@ def get_klines(symbol, interval="15", limit=200):
         "turnover",
     ]
 
-    for col in [
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume",
-    ]:
+    for col in ["open", "high", "low", "close", "volume"]:
         df[col] = df[col].astype(float)
 
     return df
