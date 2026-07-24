@@ -13,7 +13,7 @@ async def scan():
 
     while True:
         try:
-            symbols = get_usdt_symbols()
+            symbols = get_usdt_futures_symbols()
 
             print(f"Перевіряю {len(symbols)} пар")
 
