@@ -5,33 +5,42 @@ BASE_URL = "https://fapi.binance.com"
 
 
 def get_usdt_futures_symbols():
-    url = f"{BASE_URL}/fapi/v1/exchangeInfo"
-    data = requests.get(url, timeout=10).json()
+    response = requests.get(f"{BASE_URL}/fapi/v1/exchangeInfo", timeout=10)
+    print(response.status_code)
+    print(response.text)
 
-    symbols = []
+    data = response.json()
 
-    for s in data["symbols"]:
-        if s["quoteAsset"] == "USDT" and s["status"] == "TRADING":
-            symbols.append(s["symbol"])
+    if "symbols" not in data:
+        raise Exception(data)
 
-    return symbols
+    return [
+        s["symbol"]
+        for s in data["symbols"]
+        if s["quoteAsset"] == "USDT" and s["status"] == "TRADING"
+    ]
 
 
 def get_klines(symbol, interval="15m", limit=200):
-    url = f"{BASE_URL}/fapi/v1/klines"
+    response = requests.get(
+        f"{BASE_URL}/fapi/v1/klines",
+        params={
+            "symbol": symbol,
+            "interval": interval,
+            "limit": limit,
+        },
+        timeout=10,
+    )
 
-    params = {
-        "symbol": symbol,
-        "interval": interval,
-        "limit": limit
-    }
+    data = response.json()
 
-    data = requests.get(url, params=params, timeout=10).json()
-
-    df = pd.DataFrame(data, columns=[
-        "time", "open", "high", "low", "close",
-        "volume", "_1", "_2", "_3", "_4", "_5", "_6"
-    ])
+    df = pd.DataFrame(
+        data,
+        columns=[
+            "time", "open", "high", "low", "close",
+            "volume", "_1", "_2", "_3", "_4", "_5", "_6"
+        ],
+    )
 
     df = df[["time", "open", "high", "low", "close", "volume"]]
 
