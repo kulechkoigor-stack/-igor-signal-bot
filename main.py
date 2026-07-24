@@ -1,6 +1,6 @@
 import asyncio
 
-from bybit_api import get_usdt_symbols, get_klines
+from binance_api import get_usdt_futures_symbols, get_klines
 from indicators import add_indicators, get_signal
 from telegram_bot import send_signal
 
@@ -9,7 +9,7 @@ sent_signals = set()
 
 
 async def scan():
-    print("🚀 IGOR Signal Bot (Bybit) запущено")
+    symbols = get_usdt_futures_symbols()
 
     while True:
         try:
