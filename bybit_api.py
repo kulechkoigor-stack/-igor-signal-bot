@@ -1,56 +1,39 @@
-from pybit.unified_trading import HTTP
+import requests
 import pandas as pd
 
-session = HTTP(testnet=False)
+BASE_URL = "https://fapi.binance.com"
 
 
-def get_usdt_symbols():
-    return [
-        "BTCUSDT",
-        "ETHUSDT",
-        "BNBUSDT",
-        "SOLUSDT",
-        "XRPUSDT",
-        "DOGEUSDT",
-        "ADAUSDT",
-        "TRXUSDT",
-        "LINKUSDT",
-        "AVAXUSDT",
-        "SUIUSDT",
-        "TONUSDT",
-        "DOTUSDT",
-        "LTCUSDT",
-        "BCHUSDT",
-        "AAVEUSDT",
-        "NEARUSDT",
-        "APTUSDT",
-        "ARBUSDT",
-        "OPUSDT"
-    ]
+def get_usdt_futures_symbols():
+    url = f"{BASE_URL}/fapi/v1/exchangeInfo"
+    data = requests.get(url, timeout=10).json()
+
+    symbols = []
+
+    for s in data["symbols"]:
+        if s["quoteAsset"] == "USDT" and s["status"] == "TRADING":
+            symbols.append(s["symbol"])
+
+    return symbols
 
 
-def get_klines(symbol, interval="15", limit=200):
-    response = session.get_kline(
-        category="linear",
-        symbol=symbol,
-        interval=interval,
-        limit=limit,
-    )
+def get_klines(symbol, interval="15m", limit=200):
+    url = f"{BASE_URL}/fapi/v1/klines"
 
-    rows = response["result"]["list"]
-    rows.reverse()
+    params = {
+        "symbol": symbol,
+        "interval": interval,
+        "limit": limit
+    }
 
-    df = pd.DataFrame(rows)
+    data = requests.get(url, params=params, timeout=10).json()
 
-    df.columns = [
-        "time",
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume",
-        "turnover",
-    ]
+    df = pd.DataFrame(data, columns=[
+        "time", "open", "high", "low", "close",
+        "volume", "_1", "_2", "_3", "_4", "_5", "_6"
+    ])
+
+    df = df[["time", "open", "high", "low", "close", "volume"]]
 
     for col in ["open", "high", "low", "close", "volume"]:
         df[col] = df[col].astype(float)
