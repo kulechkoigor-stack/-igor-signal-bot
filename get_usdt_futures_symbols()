@@ -1,0 +1,16 @@
+def get_usdt_futures_symbols():
+    response = requests.get(f"{BASE_URL}/fapi/v1/exchangeInfo", timeout=10)
+
+    print("STATUS:", response.status_code)
+    print("BODY:", response.text)
+
+    data = response.json()
+
+    if "symbols" not in data:
+        raise Exception(f"Binance returned: {data}")
+
+    return [
+        s["symbol"]
+        for s in data["symbols"]
+        if s["quoteAsset"] == "USDT" and s["status"] == "TRADING"
+    ]
