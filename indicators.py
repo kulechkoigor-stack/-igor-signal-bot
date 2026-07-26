@@ -10,6 +10,14 @@ def add_indicators(df):
         df["close"], window=50
     ).ema_indicator()
 
+    # ATR
+    df["atr"] = ta.volatility.AverageTrueRange(
+        high=df["high"],
+        low=df["low"],
+        close=df["close"],
+        window=14
+    ).average_true_range()
+
     return df
 
 
