@@ -1,252 +1,168 @@
-import math
-import pandas as pd
 import logging
+import pandas as pd
+import numpy as np
 
 from config import (
-    EMA_FAST, EMA_SLOW,
-    ATR_SL_MULT, ATR_TP1_MULT, ATR_TP2_MULT, ATR_TP3_MULT,
-    MIN_SCORE_NORMAL, MIN_SCORE_PUMP_DUMP,
-    SCORE_EMA_TREND, SCORE_EMA_CROSS,
-    SCORE_RSI, SCORE_MACD, SCORE_VOLUME,
+    ATR_SL_MULT,
+    ATR_TP1_MULT,
+    ATR_TP2_MULT,
+    ATR_TP3_MULT,
+    MIN_SCORE_NORMAL,
 )
-
-from scorer import score_signal, detect_pump_dump
 
 logger = logging.getLogger(__name__)
 
-
-def _fmt(value: float, decimals: int = 6) -> float:
-    return round(value, decimals)
-
-
-def _trend_direction(
-    latest: "pd.Series",
-    ema_fast_col: str,
-    ema_slow_col: str
-) -> str:
-    close = latest["close"]
-    ema_fast = latest.get(ema_fast_col)
-    ema_slow = latest.get(ema_slow_col)
-
-    if ema_fast is None or ema_slow is None:
-        return "Neutral"
-
-    if close > ema_fast and ema_fast > ema_slow:
-        return "Bullish"
-
-    if close < ema_fast and ema_fast < ema_slow:
-        return "Bearish"
-
-    return "Neutral"
-
-
-def _recommended_leverage(atr: float, close: float) -> int:
-    if close <= 0:
-        return 5
-
-    atr_pct = (atr / close) * 100
-
-    if atr_pct < 1.5:
-        return 15
-    elif atr_pct < 3.0:
-        return 10
-    elif atr_pct < 5.0:
-        return 5
-    else:
-        return 3
-
-
-def generate_signals(
-    symbol: str,
-    df: pd.DataFrame,
-    _stats: dict | None = None,
-) -> list[dict]:
+def generate_signals(symbol: str, df_15m, client=None, _stats=None) -> list[dict]:
     """
-    Generate NORMAL and MOMENTUM signals with trend filter protection.
+    Детектор Імпульсів (Pump & Dump v2.3):
+    - Захищений від помилок розрахунку та порожніх даних.
+    - Фільтрує слабкий об'єм, шпильки та ринковий шум.
+    - Блокує шорти при надмірній перепроданості (RSI < 25), щоб уникнути відскоків проти стопів.
     """
-
-    if df is None or len(df) < 25:
-        return []
-
-    latest = df.iloc[-1]
-
-    # PRICE
-    try:
-        close = float(latest["close"])
-    except (TypeError, ValueError):
-        close = 0.0
-
-    if not math.isfinite(close) or close <= 0:
-        logger.warning("[%s] Invalid close price (%s)", symbol, close)
-        return []
-
-    # ATR
-    try:
-        atr = float(latest.get("atr"))
-    except (TypeError, ValueError):
-        atr = 0.0
-
-    if not math.isfinite(atr) or atr <= 0:
-        logger.warning("[%s] Invalid ATR (%s)", symbol, atr)
-        return []
-
-    # PRICE PRECISION
-    decimals = 2 if close >= 100 else (4 if close >= 1 else 6)
-
-    # EMA FOR TREND VALIDATION
-    ema_fast = float(latest.get(f"ema{EMA_FAST}", 0) or 0)
-    ema_slow = float(latest.get(f"ema{EMA_SLOW}", 0) or 0)
-
-    # PUMP / DUMP
-    pd_result = detect_pump_dump(df)
     signals = []
+    if _stats is None:
+        _stats = {}
+        
+    _stats["raw"] = _stats.get("raw", 0) + 1
 
-    # LONG / SHORT
-    for direction in ("LONG", "SHORT"):
+    if df_15m is None or len(df_15m) < 30:
+        return signals
 
-        # Trend filter
-        if ema_fast > 0 and ema_slow > 0:
-            if direction == "LONG" and close < ema_fast:
-                continue
-            if direction == "SHORT" and close > ema_fast:
-                continue
+    try:
+        # Безпечний розрахунок ATR
+        if 'atr' not in df_15m.columns:
+            high_low = df_15m['high'] - df_15m['low']
+            high_close = np.abs(df_15m['high'] - df_15m['close'].shift())
+            low_close = np.abs(df_15m['low'] - df_15m['close'].shift())
+            ranges = pd.concat([high_low, high_close, low_close], axis=1)
+            df_15m['atr'] = ranges.max(axis=1).rolling(14).mean()
 
-        result = score_signal(df, direction)
-        base_score = result.get("score", 0)
-        signal_type = result.get("signal_type")
-        components = result.get("components", {})
+        # Безпечний розрахунок Volume MA
+        if 'vol_ma' not in df_15m.columns:
+            df_15m['vol_ma'] = df_15m['volume'].rolling(window=20).mean()
 
-        # PUMP/DUMP BONUS
-        score = base_score
-        pump_bonus_applied = 0
+        # Безпечний розрахунок RSI
+        if 'rsi' not in df_15m.columns:
+            delta = df_15m['close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / loss
+            df_15m['rsi'] = 100 - (100 / (1 + rs))
 
-        if base_score >= 85 and pd_result.get("bonus", 0):
-            if direction == "LONG" and pd_result.get("pump"):
-                pump_bonus_applied = pd_result["bonus"]
-            elif direction == "SHORT" and pd_result.get("dump"):
-                pump_bonus_applied = pd_result["dump"]
+        latest = df_15m.iloc[-1]
+        
+        open_val = float(latest.get('open', 0))
+        high = float(latest.get('high', 0))
+        low = float(latest.get('low', 0))
+        close = float(latest.get('close', 0))
+        volume = float(latest.get('volume', 0))
+        vol_ma = float(latest.get('vol_ma', 1))
+        atr = float(latest.get('atr', 0))
+        rsi = float(latest.get('rsi', 50.0))
 
-            score = min(100, base_score + pump_bonus_applied)
+        if open_val <= 0 or close <= 0 or atr <= 0 or vol_ma <= 0:
+            return signals
 
-        # Use the same score threshold policy as scanner.py
-        min_required = (
-            MIN_SCORE_PUMP_DUMP
-            if pd_result.get("confirmed")
-            else MIN_SCORE_NORMAL
-        )
+        # 1. Перевірка мінімального об'єму (мінімум у 2.3 рази вище за середнє)
+        volume_ratio = volume / vol_ma
+        if volume_ratio < 2.3:
+            _stats["rejected_low_volume"] = _stats.get("rejected_low_volume", 0) + 1
+            return signals
 
-        # STATS
-        if _stats is not None:
-            _stats["raw"] = _stats.get("raw", 0) + 1
-            _stats.setdefault("candidates", []).append({
-                "symbol": symbol,
-                "direction": direction,
-                "score": score,
-                "min_required": min_required,
-            })
+        # 2. Імпульс ціни
+        price_change_pct = (close - open_val) / open_val * 100
+        candle_range = high - low
+        if candle_range <= 0:
+            return signals
 
-        # MINIMUM SCORE
-        if score < min_required:
-            if _stats is not None:
-                _stats["rejected_score"] = (
-                    _stats.get("rejected_score", 0) + 1
-                )
-            continue
+        direction = None
+        score = 80.0
 
-        # ENTRY / SL / TP
-        tick = 10 ** (-decimals)
+        # 3. Фільтр напрямку, довгих хвостів та захист по RSI
+        if price_change_pct >= 1.8:  # LONG
+            direction = "LONG"
+            close_position_ratio = (high - close) / candle_range
+            if close_position_ratio > 0.30:  # Верхній хвіст завеликий
+                _stats["rejected_wick"] = _stats.get("rejected_wick", 0) + 1
+                return signals
+            if rsi > 85.0:  # Захист від надмірної перекупленості в лонг
+                _stats["rejected_rsi"] = _stats.get("rejected_rsi", 0) + 1
+                return signals
+
+        elif price_change_pct <= -1.8:  # SHORT
+            direction = "SHORT"
+            close_position_ratio = (close - low) / candle_range
+            if close_position_ratio > 0.30:  # Нижній хвіст завеликий
+                _stats["rejected_wick"] = _stats.get("rejected_wick", 0) + 1
+                return signals
+            
+            # ГОЛОВНИЙ ФІЛЬТР: Не шортимо, якщо монета вже повністю на дні (перепроданість)
+            if rsi < 25.0:
+                _stats["rejected_rsi_oversold"] = _stats.get("rejected_rsi_oversold", 0) + 1
+                return signals
+        else:
+            _stats["rejected_low_momentum"] = _stats.get("rejected_low_momentum", 0) + 1
+            return signals
+
+        # Додаткові бали за потужний об'єм
+        if volume_ratio >= 4.0:
+            score += 15
+
+        min_score_limit = MIN_SCORE_NORMAL if 'MIN_SCORE_NORMAL' in globals() else 75.0
+        if score < min_score_limit:
+            _stats["rejected_score"] = _stats.get("rejected_score", 0) + 1
+            return signals
+
+        # 4. Розрахунок стопів та тейків за ATR (множник 1.8 з конфігу)
         entry = close
+        sl_distance = atr * ATR_SL_MULT
+        tp1_distance = atr * ATR_TP1_MULT
+        tp2_distance = atr * ATR_TP2_MULT
+        tp3_distance = atr * ATR_TP3_MULT
 
         if direction == "LONG":
-            sl = entry - ATR_SL_MULT * atr
-            tp1 = entry + ATR_TP1_MULT * atr
-            tp2 = entry + ATR_TP2_MULT * atr
-            tp3 = entry + ATR_TP3_MULT * atr
-
-            if tp2 <= tp1:
-                tp2 = tp1 + tick
-            if tp3 <= tp2:
-                tp3 = tp2 + tick
+            sl = entry - sl_distance
+            tp1 = entry + tp1_distance
+            tp2 = entry + tp2_distance
+            tp3 = entry + tp3_distance
         else:
-            sl = entry + ATR_SL_MULT * atr
-            tp1 = entry - ATR_TP1_MULT * atr
-            tp2 = entry - ATR_TP2_MULT * atr
-            tp3 = entry - ATR_TP3_MULT * atr
+            sl = entry + sl_distance
+            tp1 = entry - tp1_distance
+            tp2 = entry - tp2_distance
+            tp3 = entry - tp3_distance
 
-            if tp2 >= tp1:
-                tp2 = tp1 - tick
-            if tp3 >= tp2:
-                tp3 = tp2 - tick
+        if min(entry, sl, tp1, tp2, tp3) <= 0:
+            return signals
 
-        # R:R based on TP1
-        risk = abs(entry - sl)
-        reward = abs(tp1 - entry)
-        rr = round(reward / risk, 2) if risk > 0 else 0
-
-        # ROUNDING & VALIDATION
-        fmt_entry = _fmt(entry, decimals)
-        fmt_sl = _fmt(sl, decimals)
-        fmt_tp1 = _fmt(tp1, decimals)
-        fmt_tp2 = _fmt(tp2, decimals)
-        fmt_tp3 = _fmt(tp3, decimals)
-
-        levels = {
-            "entry": fmt_entry,
-            "sl": fmt_sl,
-            "tp1": fmt_tp1,
-            "tp2": fmt_tp2,
-            "tp3": fmt_tp3,
-        }
-
-        if any(
-            not math.isfinite(v) or v <= 0
-            for v in levels.values()
-        ):
-            continue
-
-        vol_ma = float(latest.get("vol_ma", 0) or 0)
-        volume = float(latest.get("volume", 0) or 0)
-        vol_ratio = round(volume / vol_ma, 2) if vol_ma > 0 else 0
-
-        leverage = _recommended_leverage(atr, close)
-        trend = _trend_direction(
-            latest, f"ema{EMA_FAST}", f"ema{EMA_SLOW}"
-        )
+        try:
+            signal_entry_time = float(latest.name.timestamp())
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            signal_entry_time = None
 
         signal = {
             "symbol": symbol,
             "direction": direction,
-            "signal_type": signal_type or "NORMAL",
-            "entry": fmt_entry,
-            "sl": fmt_sl,
-            "tp1": fmt_tp1,
-            "tp2": fmt_tp2,
-            "tp3": fmt_tp3,
-            "rr": rr,
-            "leverage": leverage,
-            "trend": trend,
             "score": score,
-            "base_score": base_score,
-            "pump_bonus_applied": pump_bonus_applied,
-            "components": components,
-            "pump_dump": pd_result,
+            "entry": entry,
+            "sl": sl,
+            "tp1": tp1,
+            "tp2": tp2,
+            "tp3": tp3,
+            "rr": 2.6,
+            "signal_entry_time": signal_entry_time,
             "indicators": {
-                "rsi": round(latest.get("rsi") or 0, 2),
-                "macd": round(latest.get("macd") or 0, 8),
-                "macd_sig": round(latest.get("macd_sig") or 0, 8),
-                "macd_hist": round(latest.get("macd_hist") or 0, 8),
-                "ema50": _fmt(
-                    latest.get(f"ema{EMA_FAST}") or 0, decimals
-                ),
-                "ema200": _fmt(
-                    latest.get(f"ema{EMA_SLOW}") or 0, decimals
-                ),
-                "atr": round(atr, 6),
-                "volume": round(volume, 2),
-                "vol_ratio": vol_ratio,
+                "atr": atr,
+                "volume_ratio": volume_ratio,
+                "rsi": rsi
             },
+            "pump_dump": {
+                "confirmed": True
+            }
         }
-
+        
         signals.append(signal)
+        return signals
 
-    return signals
+    except Exception as exc:
+        logger.error("[%s] Помилка в generate_signals: %s", symbol, exc, exc_info=True)
+        return signals
